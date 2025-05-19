@@ -1,43 +1,36 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV, ParameterSampler # Added ParameterSampler
+from sklearn.model_selection import StratifiedKFold, RandomizedSearchCV, ParameterSampler
 from sklearn.ensemble import RandomForestClassifier
-import xgboost as xgb # Changed import to use xgb directly
-from xgboost import XGBClassifier # Keep for type hinting or if RF part needs it, though xgb.train will be used
+import xgboost as xgb
+from xgboost import XGBClassifier
 from sklearn.metrics import confusion_matrix, make_scorer
 import time
-# --- XGBoost GPU Configuration Check ---
-print("\n--- XGBoost GPU Configuration Check ---")
-# Default to CPU, and a message
-xgboost_selected_tree_method = 'hist' # Default to CPU tree_method
-xgboost_device_setting = 'cpu' # Default to CPU device
+
+
+xgboost_selected_tree_method = 'hist'
+xgboost_device_setting = 'cpu'
 xgboost_device_message = "XGBoost will run on CPU (device='cpu', tree_method='hist'). Reason: Default fallback, check failed or not attempted."
 
 try:
-    # Attempt to initialize and fit a dummy XGBClassifier with device='cuda'
-    # This is a practical way to check if GPU acceleration is usable.
-    # XGBClassifier is already imported, numpy as np too.
-    _check_xgb = xgb.XGBClassifier(device='cuda', tree_method='hist', n_estimators=1, eval_metric='logloss', random_state=42) # Explicitly use xgb.XGBClassifier
-    # Use minimal, valid dummy data for the fit test
+    _check_xgb = xgb.XGBClassifier(device='cuda', tree_method='hist', n_estimators=1, eval_metric='logloss', random_state=42)
     _dummy_X_check = np.array([[0,0],[1,1]])
     _dummy_y_check = np.array([0,1])
     _check_xgb.fit(_dummy_X_check, _dummy_y_check)
     
     # If fit succeeds, GPU is usable
     xgboost_device_setting = 'cuda'
-    xgboost_selected_tree_method = 'hist' # 'hist' is often used with GPU as well
+    xgboost_selected_tree_method = 'hist'
     xgboost_device_message = "XGBoost GPU is available and configured. Using device='cuda', tree_method='hist'."
     print(xgboost_device_message)
 except Exception as e:
-    # Catching a broad exception, as XGBoost might raise various errors
-    # if GPU is not available, not configured, or drivers are missing.
     xgboost_device_message = f"XGBoost GPU not available or setup error (e.g., not compiled with GPU support, no driver): {str(e)}. Falling back to CPU (device='cpu', tree_method='hist')."
     print(xgboost_device_message)
-    xgboost_device_setting = 'cpu' # Ensure fallback to CPU device
-    xgboost_selected_tree_method = 'hist' # Ensure fallback to CPU tree_method
-# --- End of XGBoost GPU Configuration Check ---
+    xgboost_device_setting = 'cpu'
+    xgboost_selected_tree_method = 'hist'
 
-# Define performance metrics based on the PDF
+
+
 def sensitivity(y_true, y_pred, positive_label=1):
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
     return tp / (tp + fn) if (tp + fn) > 0 else 0
@@ -46,13 +39,12 @@ def specificity(y_true, y_pred, positive_label=1):
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
     return tn / (tn + fp) if (tn + fp) > 0 else 0
 
-# Create scorers for use in cross-validation/tuning
+
 scorers = {
     'sensitivity': make_scorer(sensitivity),
     'specificity': make_scorer(specificity)
 }
 
-# --- Step 1 & 2: Data Loading, Merging, and Initial Exploration ---
 
 print("Loading data...")
 try:
@@ -68,12 +60,10 @@ try:
     print("Data columns preview:", data_df.columns[:5].tolist(), "...") # Show only first few
     print("Data head:\n", data_df.head())
 
-    # Check if the first column name is consistent for merging
     label_id_col = labels_df.columns[0]
     data_id_col = data_df.columns[0]
     if label_id_col != data_id_col:
         print(f"\nWarning: ID columns might differ ('{label_id_col}' vs '{data_id_col}'). Assuming first column is the sample ID for merging.")
-        # Rename data_id_col to label_id_col for consistent merging
         print(f"Renaming '{data_id_col}' to '{label_id_col}' in data_df for merging.")
         data_df.rename(columns={data_id_col: label_id_col}, inplace=True)
 
@@ -92,38 +82,32 @@ try:
     # Check if any column has missing values
     if merged_df.isnull().any().any():
         print("\nWarning: Missing values detected!")
-        # Add handling strategy here if needed later (e.g., imputation)
     else:
         print("No missing values found.")
 
-    # Explore target variable distribution
-    target_col = labels_df.columns[1] # Assuming second column in labels is the target
+
+    target_col = labels_df.columns[1]
     print(f"\nDistribution of target variable ('{target_col}'):")
     print(merged_df[target_col].value_counts())
 
 except FileNotFoundError as e:
     print(f"Error: {e}. Make sure 'labels.csv' and 'data.csv' are in the directory.")
-    merged_df = None # Ensure merged_df is None on error
+    merged_df = None
 except Exception as e:
-    merged_df = None # Ensure merged_df is None on error
+    merged_df = None
     print(f"An error occurred: {e}")
 
-# Step 3: Data Preprocessing
+# Data Preprocessing
 print("\n--- Step 3: Data Preprocessing ---")
-if 'merged_df' in locals() and merged_df is not None: # Check if merge was successful
-    # Identify feature columns (assuming they start from the 3rd column)
+if 'merged_df' in locals() and merged_df is not None:
     feature_columns = merged_df.columns[2:]
     print(f"Identified {len(feature_columns)} feature columns starting from '{feature_columns[0]}'.")
 
-    # Separate features (X) and target (y)
     X = merged_df[feature_columns]
-    y = merged_df[target_col] # Original multi-class target
+    y = merged_df[target_col]
 
-    # Normalization: Divide each count by the row sum
     print("Applying normalization (dividing counts by row sum)...")
-    # Calculate row sums, handle potential division by zero
     row_sums = X.sum(axis=1)
-    # Replace 0 sums with 1 to avoid division by zero (or handle as appropriate)
     row_sums[row_sums == 0] = 1
     X_normalized = X.div(row_sums, axis=0)
 
@@ -131,27 +115,24 @@ if 'merged_df' in locals() and merged_df is not None: # Check if merge was succe
     print("Normalized features shape:", X_normalized.shape)
     print("Normalized features head:\n", X_normalized.head())
 
-    # Step 4: Define Binary Classification Tasks
+    # Define Binary Classification Tasks
     print("\n--- Step 4: Define Binary Classification Tasks ---")
     cancer_types = y.unique()
     print(f"Unique cancer types found: {cancer_types}")
 
     binary_targets = {}
     for cancer_type in cancer_types:
-        # Create a binary target: 1 for the current cancer_type, 0 for others
         binary_targets[cancer_type] = y.apply(lambda x: 1 if x == cancer_type else 0)
         print(f"Created binary target for '{cancer_type}':")
         print(binary_targets[cancer_type].value_counts())
 
     print("\nBinary target variables created.")
 
-    # --- Steps 5, 6, 7 should only run if preprocessing was successful ---
     print("\n--- Step 5: Model Training & Evaluation ---")
     results = {}
     n_folds = 5
     cv_strategy = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
-    n_iter_search = 50 # Increased for more thorough hyperparameter search with GPU. Number of parameter settings sampled.
-
+    n_iter_search = 50
     # --- Define Parameter Grids for RandomizedSearchCV ---
     # Random Forest parameters
     rf_param_dist = {
@@ -169,7 +150,7 @@ if 'merged_df' in locals() and merged_df is not None: # Check if merge was succe
         'max_depth': [3, 5, 7, 9],
         'subsample': [0.6, 0.7, 0.8, 0.9, 1.0],
         'colsample_bytree': [0.6, 0.7, 0.8, 0.9, 1.0],
-        'gamma': [0, 0.1, 0.2, 0.3] # Minimum loss reduction required to make a further partition
+        'gamma': [0, 0.1, 0.2, 0.3]
     }
 
     # --- Loop through each classification task ---
@@ -180,13 +161,13 @@ if 'merged_df' in locals() and merged_df is not None: # Check if merge was succe
         # --- Random Forest ---
         print(f"\n--- Running RandomizedSearchCV for Random Forest ---")
         start_time = time.time()
-        rf = RandomForestClassifier(random_state=42, class_weight='balanced') # Added class_weight
+        rf = RandomForestClassifier(random_state=42, class_weight='balanced')
         rf_random_search = RandomizedSearchCV(
             estimator=rf, param_distributions=rf_param_dist, n_iter=n_iter_search,
-            cv=cv_strategy, scoring=scorers, refit='sensitivity', # Refit based on sensitivity, can choose specificity too
-            n_jobs=-1, random_state=42, verbose=1 # Use all available cores
+            cv=cv_strategy, scoring=scorers, refit='sensitivity',
+            n_jobs=-1, random_state=42, verbose=1
         )
-        rf_random_search.fit(X_normalized.values, y_binary) # Convert to NumPy array
+        rf_random_search.fit(X_normalized.values, y_binary)
         task_results['RandomForest'] = {
             'Sensitivity': rf_random_search.cv_results_['mean_test_sensitivity'][rf_random_search.best_index_],
             'Specificity': rf_random_search.cv_results_['mean_test_specificity'][rf_random_search.best_index_],
@@ -201,7 +182,6 @@ if 'merged_df' in locals() and merged_df is not None: # Check if merge was succe
         start_time_xgb_total = time.time()
 
         # Prepare DMatrix
-        # Ensure X_normalized is NumPy array before DMatrix
         X_np = X_normalized.values if isinstance(X_normalized, pd.DataFrame) else X_normalized
         dtrain_xgb = xgb.DMatrix(X_np, label=y_binary)
 
@@ -209,16 +189,11 @@ if 'merged_df' in locals() and merged_df is not None: # Check if merge was succe
         best_xgb_specificity = -1
         best_xgb_params = None
         
-        # Custom evaluation function for xgb.cv
         def xgb_eval_metrics_cv(preds, dtrain):
             labels = dtrain.get_label()
-            # Assuming preds are probabilities from logistic, threshold at 0.5
             pred_labels = (preds > 0.5).astype(int)
-            sens = sensitivity(labels, pred_labels) # Uses global sensitivity function
-            spec = specificity(labels, pred_labels) # Uses global specificity function
-            # xgb.cv expects metrics to be returned as list of (name, value) tuples
-            # It also expects higher is better for custom metrics used in early stopping if refit is based on them.
-            # For logging, it will show as test-sensitivity-mean etc.
+            sens = sensitivity(labels, pred_labels)
+            spec = specificity(labels, pred_labels)
             return [('sensitivity', sens), ('specificity', spec)]
 
         param_sampler = ParameterSampler(xgb_param_dist, n_iter=n_iter_search, random_state=42)
@@ -227,40 +202,35 @@ if 'merged_df' in locals() and merged_df is not None: # Check if merge was succe
             print(f"XGBoost Iteration {i+1}/{n_iter_search}")
             current_params_for_cv = xgb_params_sampled.copy()
             
-            # Common parameters for xgb.cv
             current_params_for_cv['objective'] = 'binary:logistic'
             current_params_for_cv['device'] = xgboost_device_setting
             current_params_for_cv['tree_method'] = xgboost_selected_tree_method
-            # eval_metric can be a list, e.g., ['logloss', 'auc'] if needed for xgb's own early stopping
-            # but our custom feval will provide sensitivity and specificity
-            current_params_for_cv['eval_metric'] = 'logloss' # Keep a base metric for XGBoost
+            current_params_for_cv['eval_metric'] = 'logloss'
             current_params_for_cv['seed'] = 42
             
-            # Handle scale_pos_weight
-            if sum(y_binary==1) > 0: # Avoid division by zero
+            if sum(y_binary==1) > 0:
                 current_params_for_cv['scale_pos_weight'] = sum(y_binary==0) / sum(y_binary==1)
             else:
                 current_params_for_cv['scale_pos_weight'] = 1
 
 
-            num_boost_round_sampled = current_params_for_cv.pop('n_estimators', 200) # Default if not in grid
+            num_boost_round_sampled = current_params_for_cv.pop('n_estimators', 200)
 
             try:
                 cv_results = xgb.cv(
                     params=current_params_for_cv,
                     dtrain=dtrain_xgb,
                     num_boost_round=num_boost_round_sampled,
-                    folds=cv_strategy, # Uses the StratifiedKFold object
-                    custom_metric=xgb_eval_metrics_cv, # Changed feval to custom_metric
-                    maximize=True, # Important if early stopping relies on custom_metric's first metric (sensitivity)
-                    early_stopping_rounds=10, # Optional: stops if custom_metric doesn't improve
-                    verbose_eval=False # Can be True or an int for verbosity
+                    folds=cv_strategy,
+                    custom_metric=xgb_eval_metrics_cv,
+                    maximize=True,
+                    early_stopping_rounds=10,
+                    verbose_eval=False
                 )
                 
-                # Get metrics from the best iteration (due to early stopping)
                 current_sensitivity = cv_results['test-sensitivity-mean'].iloc[-1]
                 current_specificity = cv_results['test-specificity-mean'].iloc[-1]
-                actual_n_estimators = len(cv_results) # Number of boosting rounds run
+                actual_n_estimators = len(cv_results)
 
                 print(f"  Params: {xgb_params_sampled}, Actual Estimators: {actual_n_estimators}, Sensitivity: {current_sensitivity:.4f}, Specificity: {current_specificity:.4f}")
 
@@ -286,7 +256,7 @@ if 'merged_df' in locals() and merged_df is not None: # Check if merge was succe
             print(f"XGB Best Specificity (from xgb.cv): {best_xgb_specificity:.4f}")
             print(f"XGB Best Params: {best_xgb_params}")
         else:
-            task_results['XGBoost'] = { # Fallback if all iterations failed
+            task_results['XGBoost'] = {
                 'Sensitivity': 0,
                 'Specificity': 0,
                 'Best Params': {},
@@ -296,7 +266,7 @@ if 'merged_df' in locals() and merged_df is not None: # Check if merge was succe
 
         results[cancer_type] = task_results
 
-    # Step 6: Results Compilation
+    # Results Compilation
     print("\n--- Step 6: Results Compilation ---")
     summary_data = []
     for cancer_type, task_res in results.items():
@@ -312,16 +282,16 @@ if 'merged_df' in locals() and merged_df is not None: # Check if merge was succe
 
     results_df = pd.DataFrame(summary_data)
     print("Compiled Results Summary:")
-    print(results_df[['Task (Cancer vs Others)', 'Model', 'Sensitivity', 'Specificity', 'Training Time (s)']]) # Don't print long params dict
+    print(results_df[['Task (Cancer vs Others)', 'Model', 'Sensitivity', 'Specificity', 'Training Time (s)']])
 
-    # Step 7: Reporting
+    # Reporting
     print("\n--- Step 7: Reporting ---")
-    report_path = 'results_report_gpu_experiment.md' # Changed report filename for the new experimental script
+    report_path = 'results_report_gpu_experiment.md'
     try:
         with open(report_path, 'w') as f:
-            f.write("# Cancer Diagnosis using Blood Microbiome Data - Results Report (GPU Experiment)\n\n") # Modified title
+            f.write("# Cancer Diagnosis using Blood Microbiome Data - Results Report (GPU Experiment)\n\n")
             f.write("This report summarizes the performance of Random Forest and XGBoost classifiers for diagnosing four cancer types based on blood microbiome data, following the methodology outlined in `plan.md`.\n\n")
-            f.write("This version includes experiments for GPU optimization.\n\n") # Added a note
+            f.write("This version includes experiments for GPU optimization.\n\n")
             f.write("## Methodology Overview\n")
             f.write("- **Data:** `labels.csv`, `data.csv`\n")
             f.write("- **Preprocessing:** Counts normalized by dividing by the sum per sample.\n")
@@ -331,7 +301,6 @@ if 'merged_df' in locals() and merged_df is not None: # Check if merge was succe
             f.write("- **Metrics:** Sensitivity, Specificity\n\n")
 
             f.write("## Performance Summary\n\n")
-            # Convert relevant columns to markdown table
             results_table_md = results_df[['Task (Cancer vs Others)', 'Model', 'Sensitivity', 'Specificity', 'Training Time (s)']].to_markdown(index=False)
             f.write(results_table_md)
             f.write("\n\n")
@@ -343,5 +312,5 @@ if 'merged_df' in locals() and merged_df is not None: # Check if merge was succe
     except Exception as e:
         print(f"Error writing report file: {e}")
 
-else: # This else corresponds to the `if 'merged_df' in locals() and merged_df is not None:`
+else:
     print("\nExecution halted due to errors in data loading or merging.")
